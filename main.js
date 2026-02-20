@@ -1131,7 +1131,7 @@ async function exportAllSongs() {
     alert("Lista de canciones exportada a la consola (F12). Cópiamela para incluirla en el despliegue.");
 }
 
-function playSong(index) {
+async function playSong(index) {
     currentSongIndex = index;
     const song = songs[index];
     if (!song) return;
@@ -1156,49 +1156,87 @@ function playSong(index) {
             setStatus("INVALID YOUTUBE ID");
             return;
         }
-        if (ytReady) {
-            setStatus(`PLAYING YT: ${videoId}`);
-            kickstartYouTubeVisibility();
 
-            // Resilience 13.0: Hard State Reset
-            // 1. Scrub previous state to prevent "Sticky Timestamp" bug
-            if ('mediaSession' in navigator) {
-                navigator.mediaSession.playbackState = "none";
-                try {
-                    // Force a zero-state to bridge the gap
-                    navigator.mediaSession.setPositionState({
-                        duration: 120, // Dummy
-                        playbackRate: 0,
-                        position: 0
-                    });
-                } catch (e) { }
-            }
-            lastProgressSyncSec = -1;
+        // v4.0: Direct Stream Bypass via Piped API
+        // Instead of using the YouTube Iframe (which is blocked by WebView),
+        // we fetch the direct audio stream URL and play it through <audio>.
+        setStatus(`FETCHING STREAM: ${videoId}`);
+        playPauseBtn.textContent = '⏸';
+        userWantsToPlay = true;
 
-            // 2. Warm up web audio stack synchronously
-            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            if (audioContext.state === 'suspended') audioContext.resume();
-
-            // 3. Warm up MediaSession with REAL metadata immediately
-            updateMediaSession(song);
+        // Warm up MediaSession immediately
+        updateMediaSession(song);
+        if ('mediaSession' in navigator) {
             navigator.mediaSession.playbackState = "playing";
-
-            // 4. Load YouTube (Primary Focus Hunter)
-            // Muted Autoplay Resilience: Mobile browsers/WebViews often allow autoplay 
-            // if the video starts muted. We'll unmute in onPlayerStateChange.
-            if (ytPlayer.mute) ytPlayer.mute();
-            ytPlayer.loadVideoById(videoId);
-            ytPlayer.playVideo(); // Explicitly call play
-            userWantsToPlay = true;
-            isPlaying = false; // Defer to onPlayerStateChange
-            playPauseBtn.textContent = '⏸';
-        } else {
-            setStatus("WAITING FOR YT PLAYER...");
-            pendingSongId = videoId;
-            userWantsToPlay = true;
-            isPlaying = false;
-            playPauseBtn.textContent = '⏸';
         }
+
+        // Piped API instances (fallback chain for reliability)
+        const PIPED_INSTANCES = [
+            'https://pipedapi.kavin.rocks',
+            'https://pipedapi.adminforge.de',
+            'https://pipedapi.in.projectsegfau.lt'
+        ];
+
+        let streamFound = false;
+        for (const apiBase of PIPED_INSTANCES) {
+            if (streamFound) break;
+            try {
+                setStatus(`TRYING: ${apiBase.split('//')[1]}...`);
+                const response = await fetch(`${apiBase}/streams/${videoId}`, {
+                    signal: AbortSignal.timeout(8000) // 8 second timeout per instance
+                });
+                if (!response.ok) {
+                    console.warn(`Piped ${apiBase} returned ${response.status}`);
+                    continue;
+                }
+                const data = await response.json();
+
+                // Find the best audio stream (highest bitrate, opus or m4a)
+                if (data.audioStreams && data.audioStreams.length > 0) {
+                    // Sort by bitrate descending, prefer opus/m4a
+                    const sorted = data.audioStreams
+                        .filter(s => s.url && (s.mimeType?.includes('audio') || s.format?.includes('WEBMA') || s.format?.includes('M4A')))
+                        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+                    if (sorted.length > 0) {
+                        const bestStream = sorted[0];
+                        setStatus(`STREAM FOUND: ${bestStream.quality || bestStream.bitrate + 'kbps'}`);
+                        debugLog(`Audio stream: ${bestStream.mimeType} @ ${bestStream.bitrate}bps`);
+
+                        // Play through the existing <audio> element
+                        audioElement.src = bestStream.url;
+                        audioElement.play().then(() => {
+                            isPlaying = true;
+                            setStatus("PLAYING (DIRECT STREAM)");
+                            updateMediaSessionPositionState();
+                            startKeepAlive();
+                        }).catch(e => {
+                            setStatus("STREAM PLAY ERROR: " + e.message);
+                            console.error("Direct stream playback error:", e);
+                        });
+
+                        streamFound = true;
+                    }
+                }
+
+                if (!streamFound && data.audioStreams) {
+                    setStatus("NO COMPATIBLE AUDIO STREAM");
+                    debugLog("Available streams: " + JSON.stringify(data.audioStreams.map(s => s.mimeType)));
+                }
+            } catch (e) {
+                console.warn(`Piped instance ${apiBase} failed:`, e.message);
+                continue;
+            }
+        }
+
+        if (!streamFound) {
+            setStatus("ALL PIPED INSTANCES FAILED - SKIPPING");
+            debugLog("Could not fetch audio stream for: " + videoId);
+            // Auto-skip to next song after a brief pause
+            setTimeout(() => nextSong(), 2000);
+        }
+
+        isPlaying = false;
     } else {
         setStatus("PLAYING AUDIO FILE");
         audioElement.src = song.url;
