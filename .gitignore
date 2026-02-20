@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Web Build
+www/
+
+# Android Build
+android/build/
+android/app/build/
+android/captures/
+*.apk
+
+# Android Keys & Config
+*.keystore
+!debug.keystore
+local.properties
+.gradle/
+
+# OS Specific
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.bak
