@@ -48,6 +48,7 @@ const SILENT_TRACK_FILE = 'silent_keepalive.mp3';
 const BRIDGE_YOUTUBE_ID = 'KgUo_fR73yY';
 let keepAliveOsc = null;
 let pendingKickstartIndex = null; // Track to play after valid gesture
+let pendingResumeTime = 0; // Save playback position for background resume
 
 // DOM Elements
 const songGrid = document.getElementById('song-grid');
@@ -278,8 +279,10 @@ function onPlayerStateChange(event) {
 function nextSong() {
     if (pendingKickstartIndex !== null) {
         const target = pendingKickstartIndex;
+        const resumeAt = pendingResumeTime;
         pendingKickstartIndex = null;
-        playSong(target);
+        pendingResumeTime = 0;
+        playSong(target, resumeAt);
         return;
     }
     currentSongIndex = (currentSongIndex + 1) % songs.length;
@@ -1151,7 +1154,7 @@ async function exportAllSongs() {
     alert("Lista de canciones exportada a la consola (F12). Cópiamela para incluirla en el despliegue.");
 }
 
-async function playSong(index) {
+async function playSong(index, resumeAtSeconds = 0) {
     currentSongIndex = index;
     const song = songs[index];
     if (!song) return;
@@ -1256,6 +1259,10 @@ async function playSong(index) {
                     audioElement.play().then(() => {
                         isPlaying = true;
                         userWantsToPlay = true;
+                        if (resumeAtSeconds > 0) {
+                            audioElement.currentTime = resumeAtSeconds;
+                            console.log(`Resuming at ${resumeAtSeconds}s`);
+                        }
                         setStatus(`PLAYING (${kbps}kbps)`);
                         if ('mediaSession' in navigator) {
                             updateMediaSession(song);
@@ -1498,6 +1505,10 @@ document.addEventListener('visibilitychange', () => {
             // In APK, we might be playing via audioElement (direct stream).
             // We must pause it so the bridge can take over clearly.
             if (!audioElement.paused) audioElement.pause();
+
+            // Save current playback position before bridge
+            pendingResumeTime = audioElement.currentTime || 0;
+            console.log(`Saving resume time: ${pendingResumeTime}s`);
 
             pendingKickstartIndex = currentSongIndex;
             ytPlayer.loadVideoById(BRIDGE_YOUTUBE_ID);
