@@ -1504,7 +1504,7 @@ document.addEventListener('visibilitychange', () => {
             ytPlayer.playVideo();
             if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
-                    title: "Cargando...",
+                    title: String.fromCodePoint(0x25B6) + " / " + String.fromCodePoint(0x23ED) + " PULSA PLAY PARA RESUMIR",
                     artist: "Sincronizando modo segundo plano...",
                     album: "Purelyd Bridge",
                     artwork: [{ src: "https://img.youtube.com/vi/" + BRIDGE_YOUTUBE_ID + "/maxresdefault.jpg", sizes: "512x512", type: "image/png" }]
