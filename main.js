@@ -44,6 +44,9 @@ let isSelectMode = false;
 let selectedSongIds = [];
 let userWantsToPlay = false; // Persistent state for background bypass
 let needsGestureKickstart = true; // Workaround for Android Autoplay
+const SILENT_TRACK_FILE = 'silent_keepalive.mp3';
+const BRIDGE_YOUTUBE_ID = 'M6ebXdNyLnY';
+let keepAliveOsc = null;
 let pendingKickstartIndex = null; // Track to play after valid gesture
 
 // DOM Elements
@@ -1167,7 +1170,7 @@ async function playSong(index) {
             return;
         }
 
-        
+
         // v4.1: YouTube Innertube Direct Extraction
         // Talks DIRECTLY to YouTube's servers — no third-party proxy needed.
         // Uses the ANDROID client identity to get raw audio stream URLs.
@@ -1283,11 +1286,9 @@ async function playSong(index) {
         });
         userWantsToPlay = true;
         isPlaying = false;
-        playPauseBtn.textContent = '⏸';
+        updateMediaSession(song);
     }
-
-    updateMediaSession(song);
-function updateMediaSession(song) { if (!('mediaSession' in navigator) || pendingKickstartIndex !== null) return;
+}
 
 function updateMediaSession(song) {
     if (!('mediaSession' in navigator) || pendingKickstartIndex !== null) return;
@@ -1301,7 +1302,6 @@ function updateMediaSession(song) {
         ]
     });
 
-    // Basic State
     navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
     updateMediaSessionPositionState();
 }
@@ -1311,7 +1311,6 @@ function initMediaSessionHandlers() {
 
     const handlers = {
         'play': () => {
-            // Hardware-Direct Play
             if (pendingKickstartIndex !== null) {
                 nextSong();
                 return;
@@ -1327,7 +1326,6 @@ function initMediaSessionHandlers() {
             }
         },
         'pause': () => {
-            // Hardware-Direct Pause
             userWantsToPlay = false;
             const song = songs[currentSongIndex];
             if (!song) return;
@@ -1365,8 +1363,6 @@ function initMediaSessionHandlers() {
             console.warn(`The media session action "${action}" is not supported yet.`);
         }
     }
-
-    // Clear any generic placeholder metadata securely
     navigator.mediaSession.metadata = null;
 }
 
@@ -1382,7 +1378,6 @@ function updateMediaSessionPositionState() {
         if (song.type === 'youtube' && ytReady && ytPlayer.getDuration) {
             duration = ytPlayer.getDuration();
             currentTime = ytPlayer.getCurrentTime();
-            // Use actual playback rate if available
             try { rate = ytPlayer.getPlaybackRate() || 1; } catch (e) { }
         } else if (song.type === 'audio') {
             duration = audioElement.duration;
@@ -1392,17 +1387,13 @@ function updateMediaSessionPositionState() {
 
         if (duration && !isNaN(duration) && duration > 5 && !isNaN(currentTime)) {
             try {
-                // Ensure position doesn't exceed duration (Fixed Bugged Minutes)
                 const safePosition = Math.min(Math.max(0, currentTime), duration);
-
                 navigator.mediaSession.setPositionState({
                     duration: duration,
                     playbackRate: isPlaying ? rate : 0,
                     position: safePosition
                 });
-            } catch (e) {
-                // Ignore silent errors during transition
-            }
+            } catch (e) { }
         }
     }
 }
@@ -1426,14 +1417,9 @@ function seekToTime(time) {
     }
 }
 
-// Background Keep-Alive Logic
 const silentAudio = document.getElementById('silent-audio');
-const SILENT_TRACK_FILE = 'silent_keepalive.mp3';
-const BRIDGE_YOUTUBE_ID = 'KgUo_fR73yY';
-let keepAliveOsc = null;
 
 function startKeepAlive() {
-    // 1. Audio Tag Keep-Alive (Physical File)
     if (silentAudio) {
         if (!silentAudio.src.includes(SILENT_TRACK_FILE)) {
             silentAudio.src = SILENT_TRACK_FILE;
@@ -1442,17 +1428,13 @@ function startKeepAlive() {
         }
         silentAudio.play().catch(() => { });
     }
-
-    // 2. Web Audio Oscillator
-    // This creates a continuous signal that Android's OOM killer respects more.
     try {
         if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
         if (audioContext.state === 'suspended') audioContext.resume();
-
         if (!keepAliveOsc) {
             keepAliveOsc = audioContext.createOscillator();
             const gainNode = audioContext.createGain();
-            gainNode.gain.value = 0.0001; // Effectively silent but active
+            gainNode.gain.value = 0.0001;
             keepAliveOsc.connect(gainNode);
             gainNode.connect(audioContext.destination);
             keepAliveOsc.start();
@@ -1460,8 +1442,6 @@ function startKeepAlive() {
     } catch (e) { }
 }
 
-// Global Interaction Unlock: "Warm up" the audio context on first click
-// This makes the app an "active audio process" immediately.
 document.addEventListener('click', () => {
     startKeepAlive();
     initMediaSessionHandlers();
@@ -1495,7 +1475,7 @@ document.addEventListener('visibilitychange', () => {
             ytPlayer.playVideo();
             if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
-                    title: String.fromCodePoint(0x25B6) + " / " + String.fromCodePoint(0x23ED) + " PULSA PLAY PARA RESUMIR",
+                    title: "Cargando...",
                     artist: "Sincronizando modo segundo plano...",
                     album: "Purelyd Bridge",
                     artwork: [{ src: "https://img.youtube.com/vi/" + BRIDGE_YOUTUBE_ID + "/maxresdefault.jpg", sizes: "512x512", type: "image/png" }]
