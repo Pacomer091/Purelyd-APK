@@ -1167,26 +1167,7 @@ async function playSong(index) {
             return;
         }
 
-        // Gesture Kickstart Check
-        if (needsGestureKickstart) {
-            const bridgeTitle = String.fromCodePoint(0x25B6) + " / " + String.fromCodePoint(0x23ED) + " PULSA PLAY O SIGUIENTE";
-            const bridgeArtist = "Sincronizando permisos con YouTube...";
-            needsGestureKickstart = false;
-            pendingKickstartIndex = index;
-
-            if (ytReady) { ytPlayer.loadVideoById(BRIDGE_YOUTUBE_ID); ytPlayer.playVideo(); }
-
-            // Update MediaSession with instructions
-            if ('mediaSession' in navigator) {
-                navigator.mediaSession.metadata = new MediaMetadata({
-                    title: bridgeTitle,
-                    artist: bridgeArtist,
-                    album: "Purelyd Gestures",
-                    artwork: [{ src: "https://img.youtube.com/vi/" + BRIDGE_YOUTUBE_ID + "/maxresdefault.jpg", sizes: "512x512", type: "image/png" }]
-                });
-            }
-            return;
-        }
+        
         // v4.1: YouTube Innertube Direct Extraction
         // Talks DIRECTLY to YouTube's servers — no third-party proxy needed.
         // Uses the ANDROID client identity to get raw audio stream URLs.
@@ -1506,26 +1487,30 @@ function stopKeepAlive() {
 
 // Ensure silence plays whenever music starts to tell the OS we are active
 document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-        // Refresh UI & Metadata immediately when returning
+    if (document.hidden) {
+        const song = songs[currentSongIndex];
+        if (isPlaying && song && song.type === 'youtube' && ytReady) {
+            pendingKickstartIndex = currentSongIndex;
+            ytPlayer.loadVideoById(BRIDGE_YOUTUBE_ID);
+            ytPlayer.playVideo();
+            if ('mediaSession' in navigator) {
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: String.fromCodePoint(0x25B6) + " / " + String.fromCodePoint(0x23ED) + " PULSA PLAY PARA RESUMIR",
+                    artist: "Sincronizando modo segundo plano...",
+                    album: "Purelyd Bridge",
+                    artwork: [{ src: "https://img.youtube.com/vi/" + BRIDGE_YOUTUBE_ID + "/maxresdefault.jpg", sizes: "512x512", type: "image/png" }]
+                });
+            }
+        }
+    } else {
         const song = songs[currentSongIndex];
         if (song) updateMediaSession(song);
         updateProgress();
-
-        // Resume YouTube if user wanted it to play but system paused it
         if (userWantsToPlay && !isPlaying) {
-            const song = songs[currentSongIndex];
-            if (song && song.type === 'youtube' && ytReady) {
-                ytPlayer.playVideo();
-            }
+            if (song && song.type === 'youtube' && ytReady) ytPlayer.playVideo();
         }
     }
-
-    // For background bypass: keep silent audio playing 
-    // We stay active even if YouTube pauses itself.
-    if (userWantsToPlay) {
-        startKeepAlive();
-    }
+    if (userWantsToPlay) startKeepAlive();
 });
 
 function togglePlay() {
