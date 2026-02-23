@@ -45,7 +45,7 @@ let selectedSongIds = [];
 let userWantsToPlay = false; // Persistent state for background bypass
 let needsGestureKickstart = true; // Workaround for Android Autoplay
 const SILENT_TRACK_FILE = 'silent_keepalive.mp3';
-const BRIDGE_YOUTUBE_ID = 'M6ebXdNyLnY';
+const BRIDGE_YOUTUBE_ID = 'KgUo_fR73yY';
 let keepAliveOsc = null;
 let pendingKickstartIndex = null; // Track to play after valid gesture
 
@@ -1394,11 +1394,7 @@ function updateMediaSessionPositionState() {
         let rate = 1;
 
         // Force YouTube stats if bridge is active
-        if (pendingKickstartIndex !== null) {
-            duration = 3;
-            currentTime = ytPlayer.getCurrentTime();
-            try { rate = ytPlayer.getPlaybackRate() || 1; } catch (e) { }
-        } else if (song && song.type === 'youtube' && ytReady) {
+        if (pendingKickstartIndex !== null || (song && song.type === 'youtube' && ytReady)) {
             if (ytReady && ytPlayer.getDuration) {
                 duration = ytPlayer.getDuration();
                 currentTime = ytPlayer.getCurrentTime();
@@ -1503,8 +1499,9 @@ document.addEventListener('visibilitychange', () => {
             ytPlayer.loadVideoById(BRIDGE_YOUTUBE_ID);
             ytPlayer.playVideo();
             if ('mediaSession' in navigator) {
+                const bridgeTitle = String.fromCodePoint(0x25B6) + " / " + String.fromCodePoint(0x23ED) + " PULSA PLAY PARA RESUMIR";
                 navigator.mediaSession.metadata = new MediaMetadata({
-                    title: "Cargando...",
+                    title: bridgeTitle,
                     artist: "Sincronizando modo segundo plano...",
                     album: "Purelyd Bridge",
                     artwork: [{ src: "https://img.youtube.com/vi/" + BRIDGE_YOUTUBE_ID + "/maxresdefault.jpg", sizes: "512x512", type: "image/png" }]
@@ -1561,8 +1558,7 @@ function updateProgress() {
     if (pendingKickstartIndex !== null || (song && song.type === 'youtube' && ytReady)) {
         if (ytReady && ytPlayer.getDuration) {
             current = ytPlayer.getCurrentTime();
-            // Hardcode bridge duration to 3s
-            duration = (pendingKickstartIndex !== null) ? 3 : ytPlayer.getDuration();
+            duration = ytPlayer.getDuration();
         }
     } else if (song && song.type === 'audio') {
         current = audioElement.currentTime;
