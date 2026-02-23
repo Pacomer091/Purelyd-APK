@@ -1151,12 +1151,14 @@ async function playSong(index) {
     // Background Resilience: Ensure silence starts for every track
     startKeepAlive();
 
-    // Update UI
-    document.querySelector('.player-song-info .song-name').textContent = song.title;
-    document.querySelector('.player-song-info .artist-name').textContent = song.artist;
-    const cover = song.cover || getThumbnail(song);
-    document.querySelector('.player-cover').style.backgroundImage = `url(${cover})`;
-    document.querySelector('.player-cover').style.backgroundSize = 'cover';
+    // Update UI (Conditional)
+    if (!needsGestureKickstart) {
+        document.querySelector('.player-song-info .song-name').textContent = song.title;
+        document.querySelector('.player-song-info .artist-name').textContent = song.artist;
+        const cover = song.cover || getThumbnail(song);
+        document.querySelector('.player-cover').style.backgroundImage = `url(${cover})`;
+        document.querySelector('.player-cover').style.backgroundSize = 'cover';
+    }
 
     const videoId = getYTId(song.url);
     if (song.type === 'youtube' || videoId) {
@@ -1171,12 +1173,12 @@ async function playSong(index) {
             pendingKickstartIndex = index;
 
             // Load Silent Bridge Track
-            const bridgeTitle = "⚠️ Pulsa ⏭ para empezar";
-            const bridgeArtist = "Sincronizando permisos...";
+            const bridgeTitle = String.fromCodePoint(0x25B6) + ' / ' + String.fromCodePoint(0x23ED) + ' PULSA PLAY O SIGUIENTE';
+            const bridgeArtist = 'Sincronizando permisos de audio...';
             document.querySelector('.player-song-info .song-name').textContent = bridgeTitle;
             document.querySelector('.player-song-info .artist-name').textContent = bridgeArtist;
 
-            setStatus("ESPERANDO GESTO (Pulsa Siguiente)");
+            setStatus('ESPERANDO LLAVE (Play o Siguiente)');
             audioElement.src = SILENT_TRACK_FILE;
             audioElement.play().catch(() => { });
 
@@ -1310,10 +1312,10 @@ async function playSong(index) {
     }
 
     updateMediaSession(song);
-}
+function updateMediaSession(song) { if (!('mediaSession' in navigator) || pendingKickstartIndex !== null) return;
 
 function updateMediaSession(song) {
-    if (!('mediaSession' in navigator)) return;
+    if (!('mediaSession' in navigator) || pendingKickstartIndex !== null) return;
 
     navigator.mediaSession.metadata = new MediaMetadata({
         title: song.title,
@@ -1335,6 +1337,10 @@ function initMediaSessionHandlers() {
     const handlers = {
         'play': () => {
             // Hardware-Direct Play
+            if (pendingKickstartIndex !== null) {
+                nextSong();
+                return;
+            }
             userWantsToPlay = true;
             startKeepAlive();
             const song = songs[currentSongIndex];
