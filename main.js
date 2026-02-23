@@ -237,7 +237,12 @@ function onPlayerStateChange(event) {
     setStatus(states[event.data] || "UNKNOWN");
 
     if (event.data === YT.PlayerState.ENDED) {
-        nextSong();
+        if (pendingKickstartIndex !== null) {
+            console.log("Bridge ended, resuming original song...");
+            nextSong();
+        } else {
+            nextSong();
+        }
     } else if (event.data === YT.PlayerState.PLAYING) {
         isPlaying = true;
         userWantsToPlay = true;
@@ -1375,11 +1380,14 @@ function updateMediaSessionPositionState() {
         let currentTime = 0;
         let rate = 1;
 
-        if (song.type === 'youtube' && ytReady && ytPlayer.getDuration) {
-            duration = ytPlayer.getDuration();
-            currentTime = ytPlayer.getCurrentTime();
-            try { rate = ytPlayer.getPlaybackRate() || 1; } catch (e) { }
-        } else if (song.type === 'audio') {
+        // Force YouTube stats if bridge is active
+        if (pendingKickstartIndex !== null || (song && song.type === 'youtube' && ytReady)) {
+            if (ytReady && ytPlayer.getDuration) {
+                duration = ytPlayer.getDuration();
+                currentTime = ytPlayer.getCurrentTime();
+                try { rate = ytPlayer.getPlaybackRate() || 1; } catch (e) { }
+            }
+        } else if (song && song.type === 'audio') {
             duration = audioElement.duration;
             currentTime = audioElement.currentTime;
             rate = audioElement.playbackRate || 1;
@@ -1487,7 +1495,12 @@ document.addEventListener('visibilitychange', () => {
         if (song) updateMediaSession(song);
         updateProgress();
         if (userWantsToPlay && !isPlaying) {
-            if (song && song.type === 'youtube' && ytReady) ytPlayer.playVideo();
+            if (pendingKickstartIndex !== null) {
+                console.log("Foreground detected during bridge, forcing resumption.");
+                nextSong();
+            } else if (song && song.type === 'youtube' && ytReady) {
+                ytPlayer.playVideo();
+            }
         }
     }
     if (userWantsToPlay) startKeepAlive();
@@ -1520,14 +1533,16 @@ function togglePlay() {
 
 function updateProgress() {
     const song = songs[currentSongIndex];
-    if (!song) return;
+    if (!song && pendingKickstartIndex === null) return;
 
     let current, duration;
 
-    if (song.type === 'youtube' && ytReady && ytPlayer.getDuration) {
-        current = ytPlayer.getCurrentTime();
-        duration = ytPlayer.getDuration();
-    } else if (song.type === 'audio') {
+    if (pendingKickstartIndex !== null || (song && song.type === 'youtube' && ytReady)) {
+        if (ytReady && ytPlayer.getDuration) {
+            current = ytPlayer.getCurrentTime();
+            duration = ytPlayer.getDuration();
+        }
+    } else if (song && song.type === 'audio') {
         current = audioElement.currentTime;
         duration = audioElement.duration;
     }
