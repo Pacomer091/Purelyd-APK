@@ -1516,8 +1516,8 @@ document.addEventListener('visibilitychange', () => {
             if (ytPlayer.stopVideo) ytPlayer.stopVideo();
 
             pendingKickstartIndex = currentSongIndex;
-            // Load bridge starting at second 27 (of 30s) for a ~3s bridge
-            ytPlayer.loadVideoById({ videoId: BRIDGE_YOUTUBE_ID, startSeconds: 27 });
+            // Load bridge starting at second 29 (of 30s) for a ~1s bridge
+            ytPlayer.loadVideoById({ videoId: BRIDGE_YOUTUBE_ID, startSeconds: 29 });
             ytPlayer.playVideo();
             if ('mediaSession' in navigator) {
                 navigator.mediaSession.metadata = new MediaMetadata({
