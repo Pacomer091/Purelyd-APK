@@ -1169,18 +1169,12 @@ async function playSong(index) {
 
         // Gesture Kickstart Check
         if (needsGestureKickstart) {
+            const bridgeTitle = String.fromCodePoint(0x25B6) + " / " + String.fromCodePoint(0x23ED) + " PULSA PLAY O SIGUIENTE";
+            const bridgeArtist = "Sincronizando permisos con YouTube...";
             needsGestureKickstart = false;
             pendingKickstartIndex = index;
 
-            // Load Silent Bridge Track
-            const bridgeTitle = String.fromCodePoint(0x25B6) + ' / ' + String.fromCodePoint(0x23ED) + ' PULSA PLAY O SIGUIENTE';
-            const bridgeArtist = 'Sincronizando permisos de audio...';
-            document.querySelector('.player-song-info .song-name').textContent = bridgeTitle;
-            document.querySelector('.player-song-info .artist-name').textContent = bridgeArtist;
-
-            setStatus('ESPERANDO LLAVE (Play o Siguiente)');
-            audioElement.src = SILENT_TRACK_FILE;
-            audioElement.play().catch(() => { });
+            if (ytReady) { ytPlayer.loadVideoById(BRIDGE_YOUTUBE_ID); ytPlayer.playVideo(); }
 
             // Update MediaSession with instructions
             if ('mediaSession' in navigator) {
@@ -1188,7 +1182,7 @@ async function playSong(index) {
                     title: bridgeTitle,
                     artist: bridgeArtist,
                     album: "Purelyd Gestures",
-                    artwork: [{ src: "https://img.icons8.com/color/512/music.png", sizes: "512x512", type: "image/png" }]
+                    artwork: [{ src: "https://img.youtube.com/vi/" + BRIDGE_YOUTUBE_ID + "/maxresdefault.jpg", sizes: "512x512", type: "image/png" }]
                 });
             }
             return;
@@ -1453,7 +1447,8 @@ function seekToTime(time) {
 
 // Background Keep-Alive Logic
 const silentAudio = document.getElementById('silent-audio');
-const SILENT_TRACK_FILE = "silent_keepalive.mp3";
+const SILENT_TRACK_FILE = 'silent_keepalive.mp3';
+const BRIDGE_YOUTUBE_ID = 'KgUo_fR73yY';
 let keepAliveOsc = null;
 
 function startKeepAlive() {
