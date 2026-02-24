@@ -1,4 +1,4 @@
-﻿const DEFAULT_SONGS = [
+const DEFAULT_SONGS = [
     {
         id: 1,
         title: "Welcome to Purelyd",
@@ -43,13 +43,6 @@ let editingSongId = null; // Track which song is being edited
 let isSelectMode = false;
 let selectedSongIds = [];
 let userWantsToPlay = false; // Persistent state for background bypass
-let needsGestureKickstart = true; // Workaround for Android Autoplay
-const SILENT_TRACK_FILE = 'silent_keepalive.mp3';
-const BRIDGE_YOUTUBE_ID = 'KgUo_fR73yY';
-let keepAliveOsc = null;
-let pendingKickstartIndex = null; // Track to play after valid gesture
-let pendingResumeTime = 0; // Save playback position for background resume
-let bridgeTimeout = null; // Safety timer for auto-resume
 
 // DOM Elements
 const songGrid = document.getElementById('song-grid');
@@ -239,16 +232,7 @@ function onPlayerStateChange(event) {
     setStatus(states[event.data] || "UNKNOWN");
 
     if (event.data === YT.PlayerState.ENDED) {
-        try {
-            if (pendingKickstartIndex !== null) {
-                console.log("Bridge ended, resuming original song...");
-                nextSong();
-            } else {
-                nextSong();
-            }
-        } catch (e) {
-            console.error("Error in onPlayerStateChange ENDED (APK):", e);
-        }
+        nextSong();
     } else if (event.data === YT.PlayerState.PLAYING) {
         isPlaying = true;
         userWantsToPlay = true;
@@ -258,14 +242,14 @@ function onPlayerStateChange(event) {
         if (ytPlayer.unMute) ytPlayer.unMute();
         if (ytPlayer.setVolume) ytPlayer.setVolume(volumeSlider.value);
 
-        // Skip metadata/keepalive updates during bridge to avoid competing audio
-        if (pendingKickstartIndex === null) {
-            if ('mediaSession' in navigator) {
-                navigator.mediaSession.playbackState = "playing";
-                updateMediaSession(songs[currentSongIndex]);
-            }
-            startKeepAlive();
+        if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = "playing";
+            // Authoritative metadata sync only when actually playing
+            updateMediaSession(songs[currentSongIndex]);
         }
+        // Resilience 12.0: Defer silence until YT is confirmed PLAYING
+        // This ensures YouTube keeps the primary Audio Focus.
+        startKeepAlive();
     } else if (event.data === YT.PlayerState.PAUSED) {
         isPlaying = false;
         playPauseBtn.textContent = '▶';
@@ -278,17 +262,8 @@ function onPlayerStateChange(event) {
 }
 
 function nextSong() {
-    if (pendingKickstartIndex !== null) {
-        const target = pendingKickstartIndex;
-        const resumeAt = pendingResumeTime;
-        pendingKickstartIndex = null;
-        pendingResumeTime = 0;
-        if (bridgeTimeout) { clearTimeout(bridgeTimeout); bridgeTimeout = null; }
-        playSong(target, resumeAt);
-        return;
-    }
-    currentSongIndex = (currentSongIndex + 1) % songs.length;
-    playSong(currentSongIndex);
+    let nextIndex = (currentSongIndex + 1) % songs.length;
+    playSong(nextIndex);
 }
 
 function prevSong() {
@@ -471,117 +446,16 @@ function updateAuthUI() {
 function renderSongs() {
     const mainHeading = document.querySelector('.content-area h1');
     if (mainHeading) {
-        if (currentPlaylistId === "favorites") mainHeading.textContent = "Mis Favoritos";
-        else if (currentPlaylistId === "uploads") mainHeading.textContent = "Subido por mí";
+        if (currentPlaylistId === 'favorites') mainHeading.textContent = 'My Favorites';
+        else if (currentPlaylistId === 'uploads') mainHeading.textContent = 'Subido por mí';
         else if (currentPlaylistId) {
             const p = playlists.find(p => p.id === currentPlaylistId);
-            mainHeading.textContent = p ? p.name : "Playlist";
+            mainHeading.textContent = p ? p.name : 'Playlist';
         } else {
-            mainHeading.textContent = searchTerm ? "Resultados" : "Purelyd";
+            mainHeading.textContent = 'All Songs (Home)';
         }
     }
 
-    // HOME VIEW: Show action cards instead of all songs
-    if (!currentPlaylistId && !searchTerm) {
-        const playlistCards = playlists.map(p => `
-            <div class="song-card home-action-card home-playlist-card" data-playlist-id="${p.id}" style="cursor:pointer;">
-                <div class="song-cover" style="background: linear-gradient(135deg, #6C3483, #A569BD); display:flex; align-items:center; justify-content:center; font-size:2.5rem;">&#127925;</div>
-                <div class="song-info">
-                    <div class="song-title" style="font-size:1rem; font-weight:700;">${p.name}</div>
-                    <div class="song-artist">${(p.song_ids || []).length} canciones</div>
-                </div>
-            </div>
-        `).join("");
-
-        songGrid.innerHTML = `
-            <div class="song-card home-action-card" id="home-random" style="cursor:pointer;">
-                <div class="song-cover" style="background: linear-gradient(135deg, #1DB954, #1ed760); display:flex; align-items:center; justify-content:center; font-size:3rem;">&#127922;</div>
-                <div class="song-info">
-                    <div class="song-title" style="font-size:1rem; font-weight:700;">Canción Aleatoria</div>
-                    <div class="song-artist">Sorpréndete</div>
-                </div>
-            </div>
-            <div class="song-card home-action-card" id="home-all" style="cursor:pointer;">
-                <div class="song-cover" style="background: linear-gradient(135deg, #2196F3, #64B5F6); display:flex; align-items:center; justify-content:center; font-size:3rem;">&#128218;</div>
-                <div class="song-info">
-                    <div class="song-title" style="font-size:1rem; font-weight:700;">Ver Todas</div>
-                    <div class="song-artist">Todas las canciones</div>
-                </div>
-            </div>
-            <div class="song-card home-action-card" id="home-favorites" style="cursor:pointer;">
-                <div class="song-cover" style="background: linear-gradient(135deg, #e91e63, #f06292); display:flex; align-items:center; justify-content:center; font-size:3rem;">&#10084;&#65039;</div>
-                <div class="song-info">
-                    <div class="song-title" style="font-size:1rem; font-weight:700;">Favoritos</div>
-                    <div class="song-artist">Tus canciones favoritas</div>
-                </div>
-            </div>
-            ${playlistCards}
-        `;
-
-        // Build recommended section
-        let recoSection = "";
-        const userSongs = currentUser ? songs.filter(s => s.username === currentUser.username) : [];
-        if (userSongs.length > 0) {
-            const shuffled = [...userSongs].sort(() => Math.random() - 0.5).slice(0, 5);
-            recoSection = `
-                <div style="grid-column: 1 / -1; margin-top: 20px;">
-                    <h2 style="color: white; font-size: 1.3rem; margin-bottom: 12px;">&#127911; Recomendados</h2>
-                </div>
-            ` + shuffled.map(song => {
-                const realIndex = songs.findIndex(s => s.id === song.id);
-                return `
-                <div class="song-card reco-card" data-index="${realIndex}" style="cursor:pointer;">
-                    <img src="${song.cover || getThumbnail(song)}" alt="${song.title}">
-                    <div class="title">${song.title}</div>
-                    <div class="artist">${song.artist}</div>
-                </div>`;
-            }).join("");
-        }
-        songGrid.innerHTML += recoSection;
-
-        // Attach ALL click handlers AFTER DOM is finalized
-        document.getElementById("home-random").onclick = () => {
-            if (songs.length === 0) return;
-            const randomIndex = Math.floor(Math.random() * songs.length);
-            playSong(randomIndex);
-        };
-        document.getElementById("home-all").onclick = async () => {
-            currentPlaylistId = null;
-            searchTerm = " ";
-            await loadUserSongs();
-            renderSongs();
-            searchTerm = "";
-        };
-        document.querySelectorAll(".home-playlist-card").forEach(card => {
-            card.onclick = async () => {
-                currentPlaylistId = parseInt(card.dataset.playlistId);
-                navHome.classList.remove("active");
-                navUploads.classList.remove("active");
-                navFavorites.classList.remove("active");
-                await loadUserSongs();
-                renderSongs();
-                renderPlaylists();
-            };
-        });
-        document.getElementById("home-favorites").onclick = () => {
-            if (navFavorites) navFavorites.click();
-        };
-        songGrid.querySelectorAll(".reco-card").forEach(card => {
-            card.onclick = async () => {
-                const origIndex = parseInt(card.dataset.index);
-                const songId = songs[origIndex]?.id;
-                currentPlaylistId = "uploads";
-                await loadUserSongs();
-                renderSongs();
-                const newIndex = songs.findIndex(s => s.id === songId);
-                if (newIndex >= 0) playSong(newIndex);
-            };
-        });
-        if (isSelectMode) exitSelectMode();
-        return;
-    }
-
-    // SEARCH / PLAYLIST VIEW: Show songs
     const favIds = currentUser ? (currentUser.favorites || []) : [];
 
     const filteredSongs = songs.filter(song => {
@@ -1257,7 +1131,7 @@ async function exportAllSongs() {
     alert("Lista de canciones exportada a la consola (F12). Cópiamela para incluirla en el despliegue.");
 }
 
-async function playSong(index, resumeAtSeconds = 0) {
+async function playSong(index) {
     currentSongIndex = index;
     const song = songs[index];
     if (!song) return;
@@ -1269,14 +1143,12 @@ async function playSong(index, resumeAtSeconds = 0) {
     // Background Resilience: Ensure silence starts for every track
     startKeepAlive();
 
-    // Update UI (Conditional)
-    if (!needsGestureKickstart) {
-        document.querySelector('.player-song-info .song-name').textContent = song.title;
-        document.querySelector('.player-song-info .artist-name').textContent = song.artist;
-        const cover = song.cover || getThumbnail(song);
-        document.querySelector('.player-cover').style.backgroundImage = `url(${cover})`;
-        document.querySelector('.player-cover').style.backgroundSize = 'cover';
-    }
+    // Update UI
+    document.querySelector('.player-song-info .song-name').textContent = song.title;
+    document.querySelector('.player-song-info .artist-name').textContent = song.artist;
+    const cover = song.cover || getThumbnail(song);
+    document.querySelector('.player-cover').style.backgroundImage = `url(${cover})`;
+    document.querySelector('.player-cover').style.backgroundSize = 'cover';
 
     const videoId = getYTId(song.url);
     if (song.type === 'youtube' || videoId) {
@@ -1284,8 +1156,6 @@ async function playSong(index, resumeAtSeconds = 0) {
             setStatus("INVALID YOUTUBE ID");
             return;
         }
-
-
         // v4.1: YouTube Innertube Direct Extraction
         // Talks DIRECTLY to YouTube's servers — no third-party proxy needed.
         // Uses the ANDROID client identity to get raw audio stream URLs.
@@ -1361,16 +1231,7 @@ async function playSong(index, resumeAtSeconds = 0) {
                     audioElement.src = best.url;
                     audioElement.play().then(() => {
                         isPlaying = true;
-                        userWantsToPlay = true;
-                        if (resumeAtSeconds > 0) {
-                            audioElement.currentTime = resumeAtSeconds;
-                            console.log(`Resuming at ${resumeAtSeconds}s`);
-                        }
                         setStatus(`PLAYING (${kbps}kbps)`);
-                        if ('mediaSession' in navigator) {
-                            updateMediaSession(song);
-                            navigator.mediaSession.playbackState = "playing";
-                        }
                         updateMediaSessionPositionState();
                         startKeepAlive();
                     }).catch(e => {
@@ -1402,11 +1263,6 @@ async function playSong(index, resumeAtSeconds = 0) {
         audioElement.src = song.url;
         audioElement.play().then(() => {
             isPlaying = true;
-            userWantsToPlay = true;
-            if ('mediaSession' in navigator) {
-                updateMediaSession(song);
-                navigator.mediaSession.playbackState = "playing";
-            }
             updateMediaSessionPositionState();
             startKeepAlive();
         }).catch(e => {
@@ -1415,12 +1271,14 @@ async function playSong(index, resumeAtSeconds = 0) {
         });
         userWantsToPlay = true;
         isPlaying = false;
-        updateMediaSession(song);
+        playPauseBtn.textContent = '⏸';
     }
+
+    updateMediaSession(song);
 }
 
 function updateMediaSession(song) {
-    if (!('mediaSession' in navigator) || pendingKickstartIndex !== null) return;
+    if (!('mediaSession' in navigator)) return;
 
     navigator.mediaSession.metadata = new MediaMetadata({
         title: song.title,
@@ -1431,6 +1289,7 @@ function updateMediaSession(song) {
         ]
     });
 
+    // Basic State
     navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
     updateMediaSessionPositionState();
 }
@@ -1440,10 +1299,7 @@ function initMediaSessionHandlers() {
 
     const handlers = {
         'play': () => {
-            if (pendingKickstartIndex !== null) {
-                nextSong();
-                return;
-            }
+            // Hardware-Direct Play
             userWantsToPlay = true;
             startKeepAlive();
             const song = songs[currentSongIndex];
@@ -1455,6 +1311,7 @@ function initMediaSessionHandlers() {
             }
         },
         'pause': () => {
+            // Hardware-Direct Pause
             userWantsToPlay = false;
             const song = songs[currentSongIndex];
             if (!song) return;
@@ -1492,6 +1349,9 @@ function initMediaSessionHandlers() {
             console.warn(`The media session action "${action}" is not supported yet.`);
         }
     }
+
+    // Clear any generic placeholder metadata securely
+    navigator.mediaSession.metadata = null;
 }
 
 function updateMediaSessionPositionState() {
@@ -1503,32 +1363,30 @@ function updateMediaSessionPositionState() {
         let currentTime = 0;
         let rate = 1;
 
-        // Force YouTube stats if bridge is active
-        if (pendingKickstartIndex !== null) {
-            duration = 3;
+        if (song.type === 'youtube' && ytReady && ytPlayer.getDuration) {
+            duration = ytPlayer.getDuration();
             currentTime = ytPlayer.getCurrentTime();
+            // Use actual playback rate if available
             try { rate = ytPlayer.getPlaybackRate() || 1; } catch (e) { }
-        } else if (song && song.type === 'youtube' && ytReady) {
-            if (ytReady && ytPlayer.getDuration) {
-                duration = ytPlayer.getDuration();
-                currentTime = ytPlayer.getCurrentTime();
-                try { rate = ytPlayer.getPlaybackRate() || 1; } catch (e) { }
-            }
-        } else if (song && song.type === 'audio') {
+        } else if (song.type === 'audio') {
             duration = audioElement.duration;
             currentTime = audioElement.currentTime;
             rate = audioElement.playbackRate || 1;
         }
 
-        if (duration && !isNaN(duration) && duration > 0 && !isNaN(currentTime)) {
+        if (duration && !isNaN(duration) && duration > 5 && !isNaN(currentTime)) {
             try {
+                // Ensure position doesn't exceed duration (Fixed Bugged Minutes)
                 const safePosition = Math.min(Math.max(0, currentTime), duration);
+
                 navigator.mediaSession.setPositionState({
                     duration: duration,
                     playbackRate: isPlaying ? rate : 0,
                     position: safePosition
                 });
-            } catch (e) { }
+            } catch (e) {
+                // Ignore silent errors during transition
+            }
         }
     }
 }
@@ -1552,9 +1410,13 @@ function seekToTime(time) {
     }
 }
 
+// Background Keep-Alive Logic
 const silentAudio = document.getElementById('silent-audio');
+const SILENT_TRACK_FILE = "silent_keepalive.mp3";
+let keepAliveOsc = null;
 
 function startKeepAlive() {
+    // 1. Audio Tag Keep-Alive (Physical File)
     if (silentAudio) {
         if (!silentAudio.src.includes(SILENT_TRACK_FILE)) {
             silentAudio.src = SILENT_TRACK_FILE;
@@ -1563,13 +1425,17 @@ function startKeepAlive() {
         }
         silentAudio.play().catch(() => { });
     }
+
+    // 2. Web Audio Oscillator
+    // This creates a continuous signal that Android's OOM killer respects more.
     try {
         if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
         if (audioContext.state === 'suspended') audioContext.resume();
+
         if (!keepAliveOsc) {
             keepAliveOsc = audioContext.createOscillator();
             const gainNode = audioContext.createGain();
-            gainNode.gain.value = 0.0001;
+            gainNode.gain.value = 0.0001; // Effectively silent but active
             keepAliveOsc.connect(gainNode);
             gainNode.connect(audioContext.destination);
             keepAliveOsc.start();
@@ -1577,6 +1443,8 @@ function startKeepAlive() {
     } catch (e) { }
 }
 
+// Global Interaction Unlock: "Warm up" the audio context on first click
+// This makes the app an "active audio process" immediately.
 document.addEventListener('click', () => {
     startKeepAlive();
     initMediaSessionHandlers();
@@ -1602,56 +1470,26 @@ function stopKeepAlive() {
 
 // Ensure silence plays whenever music starts to tell the OS we are active
 document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        const song = songs[currentSongIndex];
-        if (isPlaying && song && song.type === 'youtube' && ytReady) {
-            // In APK, we might be playing via audioElement (direct stream).
-            // We must pause it so the bridge can take over clearly.
-            if (!audioElement.paused) audioElement.pause();
-
-            // Save current playback position before bridge
-            pendingResumeTime = audioElement.currentTime || 0;
-            console.log(`Saving resume time: ${pendingResumeTime}s`);
-
-            // Stop the YouTube player first to prevent audio overlap
-            if (ytPlayer.stopVideo) ytPlayer.stopVideo();
-
-            pendingKickstartIndex = currentSongIndex;
-            // Load bridge starting at second 29 (of 30s) for a ~1s bridge
-            ytPlayer.loadVideoById({ videoId: BRIDGE_YOUTUBE_ID, startSeconds: 29 });
-            ytPlayer.playVideo();
-            if ('mediaSession' in navigator) {
-                navigator.mediaSession.metadata = new MediaMetadata({
-                    title: String.fromCodePoint(0x25B6) + " / " + String.fromCodePoint(0x23ED) + " PULSA PLAY PARA RESUMIR",
-                    artist: "Sincronizando modo segundo plano...",
-                    album: "Purelyd Bridge",
-                    artwork: [{ src: "https://img.youtube.com/vi/" + BRIDGE_YOUTUBE_ID + "/maxresdefault.jpg", sizes: "512x512", type: "image/png" }]
-                });
-            }
-
-            // Safety timeout: auto-resume after 4s in case ENDED event doesn't fire
-            if (bridgeTimeout) clearTimeout(bridgeTimeout);
-            bridgeTimeout = setTimeout(() => {
-                if (pendingKickstartIndex !== null) {
-                    console.log("Bridge safety timeout: forcing resume");
-                    nextSong();
-                }
-            }, 1000);
-        }
-    } else {
+    if (!document.hidden) {
+        // Refresh UI & Metadata immediately when returning
         const song = songs[currentSongIndex];
         if (song) updateMediaSession(song);
         updateProgress();
+
+        // Resume YouTube if user wanted it to play but system paused it
         if (userWantsToPlay && !isPlaying) {
-            if (pendingKickstartIndex !== null) {
-                console.log("Foreground detected during bridge, forcing resumption.");
-                nextSong();
-            } else if (song && song.type === 'youtube' && ytReady) {
+            const song = songs[currentSongIndex];
+            if (song && song.type === 'youtube' && ytReady) {
                 ytPlayer.playVideo();
             }
         }
     }
-    if (userWantsToPlay) startKeepAlive();
+
+    // For background bypass: keep silent audio playing 
+    // We stay active even if YouTube pauses itself.
+    if (userWantsToPlay) {
+        startKeepAlive();
+    }
 });
 
 function togglePlay() {
@@ -1681,17 +1519,14 @@ function togglePlay() {
 
 function updateProgress() {
     const song = songs[currentSongIndex];
-    if (!song && pendingKickstartIndex === null) return;
+    if (!song) return;
 
     let current, duration;
 
-    if (pendingKickstartIndex !== null || (song && song.type === 'youtube' && ytReady)) {
-        if (ytReady && ytPlayer.getDuration) {
-            current = ytPlayer.getCurrentTime();
-            // Hardcode bridge duration to 3s
-            duration = (pendingKickstartIndex !== null) ? 3 : ytPlayer.getDuration();
-        }
-    } else if (song && song.type === 'audio') {
+    if (song.type === 'youtube' && ytReady && ytPlayer.getDuration) {
+        current = ytPlayer.getCurrentTime();
+        duration = ytPlayer.getDuration();
+    } else if (song.type === 'audio') {
         current = audioElement.currentTime;
         duration = audioElement.duration;
     }
