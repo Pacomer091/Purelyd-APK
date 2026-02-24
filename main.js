@@ -1,4 +1,4 @@
-const DEFAULT_SONGS = [
+﻿const DEFAULT_SONGS = [
     {
         id: 1,
         title: "Welcome to Purelyd",
@@ -14,23 +14,17 @@ let currentUser = null;
 let users = [];
 let playlists = [];
 let currentPlaylistId = null; // null means 'Home' or 'Library'
-let searchTerm = '';
-
-// Global error handler for debugging
+let youtubeResults = [];
+let trendingResults = [];
+let isSearchingYT = false;
+let isFetchingTrending = false;
+let currentView = 'home'; // 'home', 'trending', 'favorites', 'uploads', 'playlist'
+let searchTimeout = null;
+const SYSTEM_BOT = 'PurelydBot';
+const WORKER_URL = 'https://purelyd.2008qlfta.workers.dev';
 window.onerror = function (msg, url, line) {
     console.error(`[Global Error] ${msg} at ${line}`);
-    debugLog(`ERR: ${msg} (L${line})`);
 };
-
-function debugLog(msg) {
-    const logEl = document.getElementById('debug-console');
-    if (logEl) {
-        const entry = document.createElement('div');
-        entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        logEl.prepend(entry);
-    }
-    console.log(`[DEBUG] ${msg}`);
-}
 
 let currentSongIndex = 0;
 let isPlaying = false;
@@ -43,6 +37,11 @@ let editingSongId = null; // Track which song is being edited
 let isSelectMode = false;
 let selectedSongIds = [];
 let userWantsToPlay = false; // Persistent state for background bypass
+let pendingKickstartIndex = null;
+let pendingResumeTime = 0; // Save playback position for background resume
+let keepAliveOsc = null;
+const SILENT_TRACK_FILE = "silent_keepalive.mp3";
+const BRIDGE_YOUTUBE_ID = "KgUo_fR73yY";
 
 // DOM Elements
 const songGrid = document.getElementById('song-grid');
@@ -138,8 +137,6 @@ window.onYouTubeIframeAPIReady = function () {
     if (window.location.protocol === 'file:') {
         console.warn("WARNING: Running from file:// protocol. YouTube API may be blocked.");
         setStatus("FILE PROTOCOL DETECTED (MAY BLOCK YT)");
-    } else {
-        setStatus("PROTOCOL: " + window.location.protocol);
     }
 
     try {
@@ -148,14 +145,14 @@ window.onYouTubeIframeAPIReady = function () {
             width: '200',
             playerVars: {
                 'autoplay': 1,
-                'controls': 1, // Let's try with controls visible initially for debug
+                'controls': 0,
                 'disablekb': 1,
                 'fs': 0,
                 'iv_load_policy': 3,
                 'modestbranding': 1,
                 'rel': 0,
                 'enablejsapi': 1,
-                'origin': window.location.origin,
+                'origin': window.location.origin || '*',
                 'playsinline': 1
             },
             events: {
@@ -164,30 +161,16 @@ window.onYouTubeIframeAPIReady = function () {
                 'onError': onPlayerError
             }
         });
-        setStatus("PLAYER CREATED, WAITING READY...");
     } catch (e) {
         setStatus("INIT ERROR: " + e.message);
-        debugLog("YT INIT ERROR: " + e.message);
         console.error(e);
     }
 };
-
-// Safety: Trigger manually if script loaded before main.js
-if (window.YT && window.YT.Player) {
-    console.log("YT API already present, triggering manual init");
-    window.onYouTubeIframeAPIReady();
-}
-
 
 function onPlayerReady(event) {
     ytReady = true;
     setStatus("READY");
     console.log("YouTube Player is ready");
-
-    // Refresh MediaSession immediately to fix "Stuck Cover" on first load
-    const song = songs[currentSongIndex];
-    if (song) updateMediaSession(song);
-
     if (pendingSongId) {
         setStatus("PLAYING PENDING...");
         ytPlayer.loadVideoById(pendingSongId);
@@ -196,27 +179,20 @@ function onPlayerReady(event) {
     }
 }
 
-function kickstartYouTubeVisibility() {
-    const iframe = document.getElementById('youtube-player');
-    if (!iframe) return;
+function onPlayerError(e) {
+    const errorMap = {
+        2: "Invalid ID",
+        5: "HTML5 Error",
+        100: "Not Found",
+        101: "Embedded Disabled",
+        150: "Embedded Disabled"
+    };
+    const errorMsg = errorMap[e.data] || `Error Code ${e.data}`;
+    setStatus(`ERROR: ${errorMsg}`);
+    console.error("YouTube Player Error:", e.data);
 
-    // Pulse visibility to ensure render pipeline engagement
-    iframe.style.opacity = "1";
-    iframe.style.zIndex = "10001";
-    iframe.focus();
-
-    setTimeout(() => {
-        iframe.style.opacity = "0.8";
-        iframe.style.zIndex = "1000";
-    }, 4000);
-}
-
-function onPlayerError(event) {
-    console.error("YouTube Player Error:", event.data);
-    setStatus("YT ERROR: " + event.data);
-    // 101/150 = Video not allowed in embedded players
-    if (event.data === 101 || event.data === 150) {
-        nextSong();
+    if (e.data === 101 || e.data === 150) {
+        alert("Este vÃ­deo tiene desactivada la reproducciÃ³n en otras webs. Prueba con otro enlace.");
     }
 }
 
@@ -230,26 +206,32 @@ function onPlayerStateChange(event) {
         [YT.PlayerState.CUED]: "CUED"
     };
     setStatus(states[event.data] || "UNKNOWN");
+    console.log(`[YT State] ${states[event.data]}`);
 
     if (event.data === YT.PlayerState.ENDED) {
-        nextSong();
+        try {
+            if (pendingKickstartIndex !== null) {
+                console.log("Bridge ended, resuming original song...");
+                nextSong();
+            } else {
+                nextSong();
+            }
+        } catch (e) {
+            console.error("Error in onPlayerStateChange ENDED:", e);
+            setStatus("TRANSITION ERROR");
+        }
     } else if (event.data === YT.PlayerState.PLAYING) {
         isPlaying = true;
         userWantsToPlay = true;
         playPauseBtn.textContent = '⏸';
-
-        // Resilience 14.0: Restore Volume strictly after confirmed playback
-        if (ytPlayer.unMute) ytPlayer.unMute();
-        if (ytPlayer.setVolume) ytPlayer.setVolume(volumeSlider.value);
-
-        if ('mediaSession' in navigator) {
-            navigator.mediaSession.playbackState = "playing";
-            // Authoritative metadata sync only when actually playing
-            updateMediaSession(songs[currentSongIndex]);
+        // Skip metadata/keepalive updates during bridge to avoid competing audio
+        if (pendingKickstartIndex === null) {
+            if ('mediaSession' in navigator) {
+                navigator.mediaSession.playbackState = "playing";
+                updateMediaSession(songs[currentSongIndex]);
+            }
+            startKeepAlive();
         }
-        // Resilience 12.0: Defer silence until YT is confirmed PLAYING
-        // This ensures YouTube keeps the primary Audio Focus.
-        startKeepAlive();
     } else if (event.data === YT.PlayerState.PAUSED) {
         isPlaying = false;
         playPauseBtn.textContent = '▶';
@@ -262,8 +244,29 @@ function onPlayerStateChange(event) {
 }
 
 function nextSong() {
+    console.log("nextSong() called. Pending:", pendingKickstartIndex);
+    if (pendingKickstartIndex !== null) {
+        const target = pendingKickstartIndex;
+        const resumeAt = pendingResumeTime;
+        pendingKickstartIndex = null;
+        pendingResumeTime = 0;
+        playSong(target, resumeAt);
+        return;
+    }
     let nextIndex = (currentSongIndex + 1) % songs.length;
     playSong(nextIndex);
+}
+
+function kickstartYouTubeVisibility() {
+    const iframe = document.getElementById('youtube-player');
+    if (!iframe) return;
+    iframe.style.opacity = "1";
+    iframe.style.zIndex = "10001";
+    iframe.focus();
+    setTimeout(() => {
+        iframe.style.opacity = "0.8";
+        iframe.style.zIndex = "1000";
+    }, 4000);
 }
 
 function prevSong() {
@@ -340,12 +343,12 @@ async function migrateToCloud() {
                     await SongDB.addSong(song, song.username || 'invitado');
                     count++;
                 } catch (err) {
-                    console.error("Error migrando canción:", song.title, err);
+                    console.error("Error migrando canciÃ³n:", song.title, err);
                 }
             }
 
             localStorage.setItem('purelyd-cloud-migrated', 'true');
-            alert(`¡Migración completada! Se han subido ${count} canciones a la nube.`);
+            alert(`Â¡MigraciÃ³n completada! Se han subido ${count} canciones a la nube.`);
             window.location.reload(); // Reload to show new data
         };
     } catch (e) {
@@ -422,7 +425,8 @@ function renderPlaylists() {
         item.onclick = async () => {
             currentPlaylistId = parseInt(item.dataset.id);
             navHome.classList.remove('active');
-            navLibrary.classList.remove('active');
+            navUploads.classList.remove('active');
+            navFavorites.classList.remove('active');
             await loadUserSongs();
             renderSongs();
             renderPlaylists();
@@ -448,12 +452,70 @@ function renderSongs() {
     if (mainHeading) {
         if (currentPlaylistId === 'favorites') mainHeading.textContent = 'My Favorites';
         else if (currentPlaylistId === 'uploads') mainHeading.textContent = 'Subido por mí';
+        else if (currentView === 'trending') mainHeading.textContent = 'Tendencias y Éxitos 📊';
         else if (currentPlaylistId) {
             const p = playlists.find(p => p.id === currentPlaylistId);
             mainHeading.textContent = p ? p.name : 'Playlist';
         } else {
-            mainHeading.textContent = 'All Songs (Home)';
+            mainHeading.textContent = searchTerm ? 'Resultados' : 'Purelyd';
         }
+    }
+
+    // TRENDING VIEW
+    if (currentView === 'trending' && !searchTerm) {
+        if (isFetchingTrending) {
+            songGrid.innerHTML = `
+                <div style="grid-column: 1 / -1; padding: 50px; text-align: center; color: #888;">
+                    <div class="spinner" style="width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.1); border-top-color: #ff0033; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px;"></div>
+                    Cargando éxitos del momento...
+                </div>
+            `;
+            return;
+        }
+
+        if (trendingResults.length === 0) {
+            songGrid.innerHTML = `
+                <div style="grid-column: 1 / -1; padding: 50px; text-align: center; color: #888;">
+                    No se han podido cargar las tendencias. Inténtalo de nuevo más tarde.
+                </div>
+            `;
+            return;
+        }
+
+        songGrid.innerHTML = `
+            <div style="grid-column: 1 / -1; margin-bottom: 20px;">
+                <p style="color: #888; font-size: 0.9rem;">Estas son las canciones más populares hoy en YouTube Music. ¡Escucha y agrégalas a tu colección!</p>
+            </div>
+        ` + trendingResults.map((song, idx) => `
+            <div class="song-card trending-card" data-trending-index="${idx}" style="cursor:pointer; position: relative;">
+                <div style="position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: white; padding: 2px 8px; border-radius: 4px; font-weight: bold; z-index: 1;">#${idx + 1}</div>
+                <img src="${song.cover}" alt="${song.title}">
+                <div class="song-info">
+                    <div class="song-title">${song.title}</div>
+                    <div class="song-artist">${song.artist}</div>
+                </div>
+            </div>
+        `).join('');
+
+        // Attach clicks for trending cards
+        document.querySelectorAll('.trending-card').forEach(card => {
+            card.onclick = async () => {
+                const idx = parseInt(card.dataset.trendingIndex);
+                const songData = trendingResults[idx];
+
+                // Play and auto-index
+                const song = await SongDB.addSong({
+                    ...songData,
+                    username: currentUser ? currentUser.username : SYSTEM_BOT
+                });
+
+                // Since it's a new song potentially, we want to play it immediately
+                songs = [song, ...songs];
+                renderSongs();
+                playSong(0);
+            };
+        });
+        return;
     }
 
     const favIds = currentUser ? (currentUser.favorites || []) : [];
@@ -552,10 +614,59 @@ function setupEventListeners() {
     // Mobile Bottom Nav Handlers
     mobileNavHome.onclick = () => {
         currentPlaylistId = null;
+        currentView = 'home';
         loadUserSongs();
         renderSongs();
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
+
+    const navTrending = document.getElementById('nav-trending');
+    const mobNavTrending = document.getElementById('mob-nav-trending');
+
+    const handleTrendingClick = async (e) => {
+        if (e) e.preventDefault();
+        currentView = 'trending';
+        currentPlaylistId = null;
+
+        // UI feedback
+        navHome.classList.remove('active');
+        if (navTrending) navTrending.classList.add('active');
+        navUploads.classList.remove('active');
+        navFavorites.classList.remove('active');
+
+        await fetchTrending();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
+    if (navTrending) navTrending.onclick = handleTrendingClick;
+    if (mobNavTrending) mobNavTrending.onclick = (e) => {
+        handleTrendingClick(e);
+        mobileLibOverlay.classList.remove('active');
+    };
+
+    async function fetchTrending() {
+        if (trendingResults.length > 0) {
+            renderSongs(); // Already have them
+            return;
+        }
+        isFetchingTrending = true;
+        renderSongs();
+
+        try {
+            const res = await fetch(`${WORKER_URL}/trending`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    trendingResults = data.results;
+                }
+            }
+        } catch (e) {
+            console.error("Failed to fetch trending:", e);
+        } finally {
+            isFetchingTrending = false;
+            renderSongs();
+        }
+    }
 
     mobileNavAdd.onclick = () => {
         mobileAddOverlay.classList.toggle('active');
@@ -607,7 +718,7 @@ function setupEventListeners() {
         // Let's assume the user wants to see the list of playlists.
         // Since we don't have a dedicated 'Playlists' main view yet,
         // maybe we should create one. But for now, let's just close.
-        alert("¡Accede a tus playlists desde el menú lateral en escritorio!");
+        alert("Accede a tus playlists desde el menú lateral en escritorio!");
     };
 
     // Close overlays when clicking close or outside (the overlay itself is the backdrop)
@@ -624,7 +735,9 @@ function setupEventListeners() {
     navHome.onclick = async (e) => {
         if (e) e.preventDefault();
         currentPlaylistId = null;
+        currentView = 'home';
         navHome.classList.add('active');
+        if (navTrending) navTrending.classList.remove('active');
         navUploads.classList.remove('active');
         navFavorites.classList.remove('active');
         await loadUserSongs();
@@ -636,8 +749,10 @@ function setupEventListeners() {
         e.preventDefault();
         if (!currentUser) return showAuthModal();
         currentPlaylistId = 'uploads';
+        currentView = 'uploads';
         navUploads.classList.add('active');
         navHome.classList.remove('active');
+        if (navTrending) navTrending.classList.remove('active');
         navFavorites.classList.remove('active');
         await loadUserSongs();
         renderSongs();
@@ -648,8 +763,10 @@ function setupEventListeners() {
         e.preventDefault();
         if (!currentUser) return showAuthModal();
         currentPlaylistId = 'favorites';
+        currentView = 'favorites';
         navFavorites.classList.add('active');
         navHome.classList.remove('active');
+        if (navTrending) navTrending.classList.remove('active');
         navUploads.classList.remove('active');
         await loadUserSongs();
         renderSongs();
@@ -821,7 +938,7 @@ function setupEventListeners() {
             }
         }
 
-        alert(`¡Importación completada! Se añadieron ${importedCount} canciones.`);
+        alert(`ï¿½Importaciï¿½n completada! Se aï¿½adieron ${importedCount} canciones.`);
         startBulkImportBtn.disabled = false;
         bulkImportModal.style.display = 'none';
         await loadUserSongs();
@@ -921,7 +1038,7 @@ function setupEventListeners() {
 
         if (isRegisterMode) {
             if (password !== confirmPassword) {
-                return alert('Las contraseñas no coinciden.');
+                return alert('Las contraseï¿½as no coinciden.');
             }
             if (await UserDB.getUser(username)) {
                 return alert('Ese nombre de usuario ya existe.');
@@ -940,7 +1057,7 @@ function setupEventListeners() {
             const user = await UserDB.getUser(username);
             if (!user || user.password !== password) {
                 console.warn("Invalid credentials");
-                return alert('Usuario o contraseña incorrectos.');
+                return alert('Usuario o contraseï¿½a incorrectos.');
             }
             currentUser = user;
             localStorage.setItem('purelyd-current-user', JSON.stringify(currentUser));
@@ -969,7 +1086,7 @@ function setupEventListeners() {
                     selectedGenres.push(genre);
                     chip.classList.add('selected');
                 } else {
-                    alert('Solo puedes elegir hasta 3 géneros.');
+                    alert('Solo puedes elegir hasta 3 gï¿½neros.');
                 }
             };
         });
@@ -979,7 +1096,7 @@ function setupEventListeners() {
 
     saveGenresBtn.onclick = async () => {
         if (selectedGenres.length === 0) {
-            return alert('Por favor, elige al menos un género.');
+            return alert('Por favor, elige al menos un gï¿½nero.');
         }
 
         currentUser.genres = selectedGenres;
@@ -1100,7 +1217,7 @@ function setupEventListeners() {
     audioElement.onplay = () => {
         isPlaying = true;
         userWantsToPlay = true;
-        playPauseBtn.textContent = '⏸';
+        playPauseBtn.textContent = '?';
         if ('mediaSession' in navigator) {
             navigator.mediaSession.playbackState = "playing";
             updateMediaSessionPositionState();
@@ -1110,28 +1227,25 @@ function setupEventListeners() {
 
     audioElement.onpause = () => {
         isPlaying = false;
-        playPauseBtn.textContent = '▶';
+        playPauseBtn.textContent = '?';
         if ('mediaSession' in navigator) {
             navigator.mediaSession.playbackState = "paused";
             updateMediaSessionPositionState();
         }
-        // ONLY stop keep-alive if the user EXPLICITLY paused
-        if (!userWantsToPlay) {
-            stopKeepAlive();
-        }
+        stopKeepAlive();
     };
 }
 
 // Utility to export all songs for GitHub deployment
 async function exportAllSongs() {
     const allSongs = await SongDB.getAllSongs();
-    console.log("--- COPIA ESTO Y PÁSAMELO ---");
+    console.log("--- COPIA ESTO Y Pï¿½SAME ---");
     console.log(JSON.stringify(allSongs, null, 2));
     console.log("-------------------------------");
-    alert("Lista de canciones exportada a la consola (F12). Cópiamela para incluirla en el despliegue.");
+    alert("Lista de canciones exportada a la consola (F12). Copiamela para incluirla en el despliegue.");
 }
 
-async function playSong(index) {
+async function playSong(index, resumeAtSeconds = 0) {
     currentSongIndex = index;
     const song = songs[index];
     if (!song) return;
@@ -1139,9 +1253,6 @@ async function playSong(index) {
     // Stop previous players
     audioElement.pause();
     if (ytReady && ytPlayer && ytPlayer.stopVideo) ytPlayer.stopVideo();
-
-    // Background Resilience: Ensure silence starts for every track
-    startKeepAlive();
 
     // Update UI
     document.querySelector('.player-song-info .song-name').textContent = song.title;
@@ -1156,108 +1267,52 @@ async function playSong(index) {
             setStatus("INVALID YOUTUBE ID");
             return;
         }
-        // v4.1: YouTube Innertube Direct Extraction
-        // Talks DIRECTLY to YouTube's servers — no third-party proxy needed.
-        // Uses the ANDROID client identity to get raw audio stream URLs.
-        setStatus(`FETCHING STREAM: ${videoId}`);
-        playPauseBtn.textContent = '⏸';
-        userWantsToPlay = true;
 
-        // Warm up MediaSession immediately
-        updateMediaSession(song);
-        if ('mediaSession' in navigator) {
-            navigator.mediaSession.playbackState = "playing";
-        }
+        // Foreground play mode enabled.
+        if (ytReady) {
+            setStatus(`PLAYING YT: ${videoId}`);
 
-        const INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-        const clients = [
-            { name: 'ANDROID', version: '19.09.37', sdk: 30 },
-            { name: 'WEB', version: '2.20240313.05.00' }
-        ];
-
-        let streamFound = false;
-        for (const client of clients) {
-            if (streamFound) break;
-            try {
-                setStatus(`TRYING ${client.name} CLIENT...`);
-                const body = {
-                    videoId: videoId,
-                    context: {
-                        client: {
-                            clientName: client.name,
-                            clientVersion: client.version,
-                            ...(client.sdk ? { androidSdkVersion: client.sdk } : {}),
-                            hl: 'en', gl: 'US'
-                        }
-                    }
-                };
-
-                const response = await fetch(
-                    `https://music.youtube.com/youtubei/v1/player?key=${INNERTUBE_KEY}`,
-                    {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(body),
-                        signal: AbortSignal.timeout(10000)
-                    }
-                );
-
-                if (!response.ok) {
-                    console.warn(`Innertube ${client.name} returned ${response.status}`);
-                    continue;
-                }
-
-                const data = await response.json();
-
-                if (data.playabilityStatus?.status !== 'OK') {
-                    setStatus(`YT STATUS: ${data.playabilityStatus?.status || 'UNKNOWN'}`);
-                    console.warn('Playability:', data.playabilityStatus?.reason);
-                    continue;
-                }
-
-                // Extract audio streams from adaptiveFormats
-                const formats = data.streamingData?.adaptiveFormats || [];
-                const audioFormats = formats
-                    .filter(f => f.mimeType && f.mimeType.startsWith('audio/') && f.url)
-                    .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-
-                if (audioFormats.length > 0) {
-                    const best = audioFormats[0];
-                    const kbps = Math.round(best.bitrate / 1000);
-                    setStatus(`STREAM: ${kbps}kbps ${best.mimeType.split(';')[0]}`);
-                    debugLog(`Audio: ${best.mimeType} @ ${best.bitrate}bps via ${client.name}`);
-
-                    // Play through the existing <audio> element
-                    audioElement.src = best.url;
-                    audioElement.play().then(() => {
-                        isPlaying = true;
-                        setStatus(`PLAYING (${kbps}kbps)`);
-                        updateMediaSessionPositionState();
-                        startKeepAlive();
-                    }).catch(e => {
-                        setStatus("PLAY ERROR: " + e.message);
-                        console.error("Stream playback error:", e);
+            // Resilience 13.0: Hard State Reset
+            // 1. Scrub previous state to prevent "Sticky Timestamp" bug
+            if ('mediaSession' in navigator) {
+                navigator.mediaSession.playbackState = "none";
+                try {
+                    // Force a zero-state to bridge the gap
+                    navigator.mediaSession.setPositionState({
+                        duration: 120, // Dummy
+                        playbackRate: 0,
+                        position: 0
                     });
-
-                    streamFound = true;
-                } else {
-                    setStatus("NO AUDIO IN RESPONSE");
-                    debugLog("Formats: " + formats.length + ", audio: 0");
-                }
-            } catch (e) {
-                console.warn(`Innertube ${client.name} failed:`, e.message);
-                setStatus(`${client.name} FAILED: ${e.message.substring(0, 30)}`);
-                continue;
+                } catch (e) { }
             }
-        }
+            lastProgressSyncSec = -1;
 
-        if (!streamFound) {
-            setStatus("EXTRACTION FAILED - SKIPPING");
-            debugLog("Failed to extract audio for: " + videoId);
-            setTimeout(() => nextSong(), 2000);
-        }
+            // 2. Warm up web audio stack synchronously
+            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioContext.state === 'suspended') audioContext.resume();
 
-        isPlaying = false;
+            // 3. Warm up MediaSession with REAL metadata immediately
+            updateMediaSession(song);
+            navigator.mediaSession.playbackState = "playing";
+
+            // 4. Load YouTube (Primary Focus Hunter)
+            if (song.type === 'youtube') kickstartYouTubeVisibility();
+            if (resumeAtSeconds > 0) {
+                ytPlayer.loadVideoById({ videoId: videoId, startSeconds: resumeAtSeconds });
+                console.log(`Resuming at ${resumeAtSeconds}s`);
+            } else {
+                ytPlayer.loadVideoById(videoId);
+            }
+            userWantsToPlay = true;
+            isPlaying = false; // Defer to onPlayerStateChange
+            playPauseBtn.textContent = '⏸';
+        } else {
+            setStatus("WAITING FOR YT PLAYER...");
+            pendingSongId = videoId;
+            userWantsToPlay = true;
+            isPlaying = true;
+            playPauseBtn.textContent = '⏸';
+        }
     } else {
         setStatus("PLAYING AUDIO FILE");
         audioElement.src = song.url;
@@ -1278,7 +1333,7 @@ async function playSong(index) {
 }
 
 function updateMediaSession(song) {
-    if (!('mediaSession' in navigator)) return;
+    if (!('mediaSession' in navigator) || pendingKickstartIndex !== null) return;
 
     navigator.mediaSession.metadata = new MediaMetadata({
         title: song.title,
@@ -1300,6 +1355,10 @@ function initMediaSessionHandlers() {
     const handlers = {
         'play': () => {
             // Hardware-Direct Play
+            if (pendingKickstartIndex !== null) {
+                nextSong();
+                return;
+            }
             userWantsToPlay = true;
             startKeepAlive();
             const song = songs[currentSongIndex];
@@ -1349,43 +1408,40 @@ function initMediaSessionHandlers() {
             console.warn(`The media session action "${action}" is not supported yet.`);
         }
     }
-
-    // Clear any generic placeholder metadata securely
-    navigator.mediaSession.metadata = null;
 }
 
 function updateMediaSessionPositionState() {
     if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
         const song = songs[currentSongIndex];
-        if (!song) return;
+        if (!song && pendingKickstartIndex === null) return;
 
         let duration = 0;
         let currentTime = 0;
         let rate = 1;
 
-        if (song.type === 'youtube' && ytReady && ytPlayer.getDuration) {
-            duration = ytPlayer.getDuration();
-            currentTime = ytPlayer.getCurrentTime();
-            // Use actual playback rate if available
-            try { rate = ytPlayer.getPlaybackRate() || 1; } catch (e) { }
-        } else if (song.type === 'audio') {
+        // Force YouTube stats if bridge is active
+        if (pendingKickstartIndex !== null || (song && song.type === 'youtube' && ytReady)) {
+            if (ytReady && ytPlayer.getDuration) {
+                // Hardcode bridge duration to 3s to bypass metadata lag bug
+                duration = (pendingKickstartIndex !== null) ? 3 : ytPlayer.getDuration();
+                currentTime = ytPlayer.getCurrentTime();
+                try { rate = ytPlayer.getPlaybackRate() || 1; } catch (e) { }
+            }
+        } else if (song && song.type === 'audio') {
             duration = audioElement.duration;
             currentTime = audioElement.currentTime;
             rate = audioElement.playbackRate || 1;
         }
 
-        if (duration && !isNaN(duration) && duration > 5 && !isNaN(currentTime)) {
+        if (duration && !isNaN(duration) && duration > 0 && !isNaN(currentTime)) {
             try {
-                // Ensure position doesn't exceed duration (Fixed Bugged Minutes)
-                const safePosition = Math.min(Math.max(0, currentTime), duration);
-
                 navigator.mediaSession.setPositionState({
                     duration: duration,
                     playbackRate: isPlaying ? rate : 0,
-                    position: safePosition
+                    position: Math.min(currentTime, duration)
                 });
             } catch (e) {
-                // Ignore silent errors during transition
+                console.warn("Error updating position state:", e);
             }
         }
     }
@@ -1412,35 +1468,19 @@ function seekToTime(time) {
 
 // Background Keep-Alive Logic
 const silentAudio = document.getElementById('silent-audio');
-const SILENT_TRACK_FILE = "silent_keepalive.mp3";
-let keepAliveOsc = null;
+// Using a more robust 1-second silent track to avoid aggressive OS throttling
+const SILENT_TRACK = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==";
 
 function startKeepAlive() {
-    // 1. Audio Tag Keep-Alive (Physical File)
     if (silentAudio) {
-        if (!silentAudio.src.includes(SILENT_TRACK_FILE)) {
-            silentAudio.src = SILENT_TRACK_FILE;
+        if (silentAudio.src !== SILENT_TRACK) {
+            silentAudio.src = SILENT_TRACK;
             silentAudio.loop = true;
-            silentAudio.volume = 0.001;
+            silentAudio.volume = 0.001; // Not muted, but nearly inaudible
         }
-        silentAudio.play().catch(() => { });
+        // Always try to play, even if already playing (no-op)
+        silentAudio.play().catch(e => console.log("Silent audio start suppressed"));
     }
-
-    // 2. Web Audio Oscillator
-    // This creates a continuous signal that Android's OOM killer respects more.
-    try {
-        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioContext.state === 'suspended') audioContext.resume();
-
-        if (!keepAliveOsc) {
-            keepAliveOsc = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-            gainNode.gain.value = 0.0001; // Effectively silent but active
-            keepAliveOsc.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-            keepAliveOsc.start();
-        }
-    } catch (e) { }
 }
 
 // Global Interaction Unlock: "Warm up" the audio context on first click
@@ -1459,50 +1499,57 @@ function stopKeepAlive() {
     if (silentAudio) {
         silentAudio.pause();
     }
-    if (keepAliveOsc) {
-        try {
-            keepAliveOsc.stop();
-            keepAliveOsc.disconnect();
-        } catch (e) { }
-        keepAliveOsc = null;
-    }
 }
 
 // Ensure silence plays whenever music starts to tell the OS we are active
 document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-        // Refresh UI & Metadata immediately when returning
+    if (document.hidden) {
         const song = songs[currentSongIndex];
-        if (song) updateMediaSession(song);
-        updateProgress();
+        if (isPlaying && song && song.type === 'youtube' && ytReady) {
+            // Store current state and timestamp for bridge resume
+            pendingResumeTime = ytPlayer.getCurrentTime() || 0;
+            console.log(`Saving resume time: ${pendingResumeTime}s`);
+            // 1. Stop the original video first to prevent audio overlap
+            ytPlayer.stopVideo();
+            pendingKickstartIndex = currentSongIndex;
+            // 2. Load bridge starting at second 27 (of 30s) for a ~3s bridge
+            ytPlayer.loadVideoById({ videoId: BRIDGE_YOUTUBE_ID, startSeconds: 27 });
+            ytPlayer.playVideo();
 
-        // Resume YouTube if user wanted it to play but system paused it
+            if ('mediaSession' in navigator) {
+                const bridgeTitle = String.fromCodePoint(0x25B6) + " / " + String.fromCodePoint(0x23ED) + " PULSA PLAY PARA RESUMIR";
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: bridgeTitle,
+                    artist: "Sincronizando modo segundo plano...",
+                    album: "Purelyd Bridge",
+                    artwork: [{ src: "https://img.youtube.com/vi/" + BRIDGE_YOUTUBE_ID + "/maxresdefault.jpg", sizes: "512x512", type: "image/png" }]
+                });
+            }
+        }
+    } else {
+        const song = songs[currentSongIndex];
+        if (song && pendingKickstartIndex === null) updateMediaSession(song);
+        updateProgress();
         if (userWantsToPlay && !isPlaying) {
-            const song = songs[currentSongIndex];
-            if (song && song.type === 'youtube' && ytReady) {
+            if (pendingKickstartIndex !== null) {
+                console.log("Foreground detected during bridge, forcing resumption.");
+                nextSong();
+            } else if (song && song.type === 'youtube' && ytReady) {
                 ytPlayer.playVideo();
             }
         }
     }
-
-    // For background bypass: keep silent audio playing 
-    // We stay active even if YouTube pauses itself.
-    if (userWantsToPlay) {
-        startKeepAlive();
-    }
+    if (userWantsToPlay) startKeepAlive();
 });
 
 function togglePlay() {
     const song = songs[currentSongIndex];
-    if (song.url.includes("youtube.com") || song.url.includes("youtu.be")) {
-        if (!ytReady) return setStatus("YT NOT READY");
-
+    if (song.type === 'youtube') {
         const state = ytPlayer.getPlayerState();
-        if (state === YT.PlayerState.PLAYING || state === YT.PlayerState.BUFFERING) {
+        if (state === YT.PlayerState.PLAYING) {
             ytPlayer.pauseVideo();
             userWantsToPlay = false;
         } else {
-            kickstartYouTubeVisibility();
             ytPlayer.playVideo();
             userWantsToPlay = true;
         }
@@ -1519,14 +1566,17 @@ function togglePlay() {
 
 function updateProgress() {
     const song = songs[currentSongIndex];
-    if (!song) return;
+    if (!song && pendingKickstartIndex === null) return;
 
     let current, duration;
 
-    if (song.type === 'youtube' && ytReady && ytPlayer.getDuration) {
-        current = ytPlayer.getCurrentTime();
-        duration = ytPlayer.getDuration();
-    } else if (song.type === 'audio') {
+    if (pendingKickstartIndex !== null || (song && song.type === 'youtube' && ytReady)) {
+        if (ytReady && ytPlayer.getDuration) {
+            current = ytPlayer.getCurrentTime();
+            // Hardcode bridge duration to 3s
+            duration = (pendingKickstartIndex !== null) ? 3 : ytPlayer.getDuration();
+        }
+    } else if (song && song.type === 'audio') {
         current = audioElement.currentTime;
         duration = audioElement.duration;
     }
@@ -1539,7 +1589,8 @@ function updateProgress() {
 
         // Resilience 13.0: Smooth & Stable Progress Sync
         const currentSec = Math.floor(current);
-        if (isPlaying) {
+        if (isPlaying && (song.type === 'youtube' || currentSec % 5 === 0)) {
+            // Jitter Guard: Only sync with OS if we haven't synced this specific second yet
             if (lastProgressSyncSec !== currentSec) {
                 updateMediaSessionPositionState();
                 lastProgressSyncSec = currentSec;
@@ -1612,7 +1663,7 @@ function openEditModal(index) {
     document.getElementById('song-url').value = song.url;
     document.getElementById('song-cover').value = song.cover || '';
 
-    document.querySelector('#add-song-modal h2').textContent = 'Editar Canción';
+    document.querySelector('#add-song-modal h2').textContent = 'Editar Canciï¿½n';
     addSongModal.style.display = 'flex';
 }
 
@@ -1633,6 +1684,8 @@ function clearLibrary() {
         renderSongs();
     }
 }
+
+init();
 
 // Selection Mode Helpers
 function toggleSelectMode() {
@@ -1723,4 +1776,3 @@ async function bulkAddToPlaylist() {
     });
 }
 
-init();
