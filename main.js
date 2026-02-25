@@ -480,7 +480,7 @@ function renderSongs() {
     if (!currentPlaylistId && !searchTerm) {
         const playlistCards = playlists.map(p => `
             <div class="song-card home-action-card home-playlist-card" data-playlist-id="${p.id}" style="cursor:pointer;">
-                <div class="song-cover" style="background: linear-gradient(135deg, #6C3483, #A569BD); display:flex; align-items:center; justify-content:center; font-size:2.5rem;">🎵</div>
+                <div class="song-cover" style="background-image: url('https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=500&auto=format&fit=crop');"></div>
                 <div class="song-info">
                     <div class="song-title" style="font-size:1rem; font-weight:700;">${p.name}</div>
                     <div class="song-artist">${(p.song_ids || []).length} canciones</div>
@@ -490,7 +490,7 @@ function renderSongs() {
 
         songGrid.innerHTML = `
             <div class="song-card home-action-card" id="home-random" style="cursor:pointer;">
-                <div class="song-cover" style="background: linear-gradient(135deg, #1DB954, #1ed760); display:flex; align-items:center; justify-content:center; font-size:3rem;">🎲</div>
+                <div class="song-cover" style="background-image: url('https://images.unsplash.com/photo-1550684848-fac1c5b4e853?w=500&auto=format&fit=crop');"></div>
                 <div class="song-info">
                     <div class="song-title" style="font-size:1rem; font-weight:700;">Canción Aleatoria</div>
                     <div class="song-artist">Sorpréndete</div>
@@ -498,14 +498,14 @@ function renderSongs() {
             </div>
 
             <div class="song-card home-action-card" id="home-all" style="cursor:pointer;">
-                <div class="song-cover" style="background: linear-gradient(135deg, #2196F3, #64B5F6); display:flex; align-items:center; justify-content:center; font-size:3rem;">&#128218;</div>
+                <div class="song-cover" style="background-image: url('https://images.unsplash.com/photo-1539375665275-f9ad415ef9ac?w=500&auto=format&fit=crop');"></div>
                 <div class="song-info">
                     <div class="song-title" style="font-size:1rem; font-weight:700;">Ver Todas</div>
                     <div class="song-artist">Todas las canciones</div>
                 </div>
             </div>
             <div class="song-card home-action-card" id="home-favorites" style="cursor:pointer;">
-                <div class="song-cover" style="background: linear-gradient(135deg, #e91e63, #f06292); display:flex; align-items:center; justify-content:center; font-size:3rem;">❤️</div>
+                <div class="song-cover" style="background-image: url('https://images.unsplash.com/photo-1516280440614-37939bbacd81?w=500&auto=format&fit=crop');"></div>
                 <div class="song-info">
                     <div class="song-title" style="font-size:1rem; font-weight:700;">Favoritos</div>
                     <div class="song-artist">Tus canciones favoritas</div>
@@ -523,7 +523,7 @@ function renderSongs() {
             recommendedSongs = shuffled;
             recoSection = `
                 <div style="grid-column: 1 / -1; margin-top: 20px;">
-                    <h2 style="color: white; font-size: 1.3rem; margin-bottom: 12px;">&#127911; Recomendados</h2>
+                    <h2 style="color: white; font-size: 1.3rem; margin-bottom: 12px;">Recomendados</h2>
                 </div>
             ` + shuffled.map((song, idx) => {
                 const realIndex = songs.findIndex(s => s.id === song.id);

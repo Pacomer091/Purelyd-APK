@@ -248,11 +248,14 @@ body {
     box-shadow: 0 12px 24px rgba(0, 0, 0, 0.5);
 }
 
-.song-card img {
+.song-card img,
+.song-cover {
     width: 100%;
     aspect-ratio: 1;
     border-radius: 8px;
     object-fit: cover;
+    background-size: cover;
+    background-position: center;
     margin-bottom: 14px;
     box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
 }
