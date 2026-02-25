@@ -19,22 +19,6 @@
 
 ---
 
-## 🚀 Empezando
-
-### Requisitos Previos
-- Un navegador web moderno.
-- (Opcional) Una cuenta de Supabase si deseas alojar tu propia base de datos.
-
-### Instalación
-1. Clona el repositorio:
-   ```bash
-   git clone https://github.com/Pacomer091/Purelyd2.git
-   ```
-2. Abre `index.html` en tu navegador.
-3. ¡Disfruta de tu música!
-
----
-
 ## 🛠️ Stack Tecnológico
 
 - **Frontend**: Vanilla JavaScript, HTML5, CSS3.
